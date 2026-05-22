@@ -1,0 +1,18 @@
+services:
+  hailo-detectord:
+    build:
+      context: ..
+    image: local/hailo-detectord:prototype
+    container_name: hailo-detectord
+    restart: unless-stopped
+    ports:
+      - "32168:32168"
+    environment:
+      HAILO_BACKEND: hailo
+      HAILO_MODEL_PATH: /models/frigate-plus.hef
+      HAILO_LABELMAP_PATH: /models/labelmap.txt
+      HAILO_CONFIDENCE_THRESHOLD: "0.35"
+    devices:
+      - /dev/hailo0:/dev/hailo0
+    volumes:
+      - ./models:/models:ro

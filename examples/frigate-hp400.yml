@@ -1,0 +1,24 @@
+# Merge the detector/model parts into the HP400 Frigate config.
+# Frigate still owns camera ingest, recording, motion regions, and tracking.
+
+detectors:
+  remote_hailo8:
+    type: deepstack
+    api_url: http://192.168.1.175:32168/v1/vision/detection
+    api_timeout: 2.0
+
+model:
+  path: /config/remote-hailo/frigate-plus-hailo8.hef
+  labelmap_path: /config/remote-hailo/labelmap.txt
+  width: 640
+  height: 640
+  input_tensor: nhwc
+  input_pixel_format: rgb
+  input_dtype: int
+  model_type: yolo-generic
+
+# Example camera reminder only. Keep the real camera sections on HP400.
+# cameras:
+#   driveway:
+#     detect:
+#       enabled: true
