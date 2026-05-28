@@ -13,7 +13,7 @@ def create_app() -> FastAPI:
     settings = get_settings()
     backend = create_backend(settings)
 
-    app = FastAPI(title="hailo-detectord", version="0.1.0")
+    app = FastAPI(title="hailo-detectord", version="0.2.0")
 
     @app.get("/health", response_model=HealthResponse)
     def health() -> HealthResponse:
@@ -24,28 +24,42 @@ def create_app() -> FastAPI:
             model_metadata_path=settings.model_metadata_path,
         )
 
-    async def run_detection(data: bytes) -> DetectResponse:
+    async def run_detection(data: bytes, *, detector_type: str = "object") -> DetectResponse:
         try:
             image = decode_image(data)
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
         started = perf_counter()
-        predictions = backend.detect(image)
+
+        if detector_type == "face":
+            predictions = backend.detect_faces(image)
+        else:
+            predictions = backend.detect(image)
+
         elapsed_ms = (perf_counter() - started) * 1000
+
         return DetectResponse(
             predictions=predictions,
             inference_ms=elapsed_ms,
-            backend=backend.name,
+            backend=f"{backend.name}:{detector_type}",
         )
 
     @app.post("/detect", response_model=DetectResponse)
     async def detect_raw(request: Request) -> DetectResponse:
-        return await run_detection(await request.body())
+        return await run_detection(await request.body(), detector_type="object")
 
     @app.post("/v1/vision/detection", response_model=DetectResponse)
     async def detect_deepstack(image: UploadFile = File(...)) -> DetectResponse:
-        return await run_detection(await image.read())
+        return await run_detection(await image.read(), detector_type="object")
+
+    @app.post("/v1/object/detection", response_model=DetectResponse)
+    async def detect_objects(image: UploadFile = File(...)) -> DetectResponse:
+        return await run_detection(await image.read(), detector_type="object")
+
+    @app.post("/v1/face/detection", response_model=DetectResponse)
+    async def detect_faces(image: UploadFile = File(...)) -> DetectResponse:
+        return await run_detection(await image.read(), detector_type="face")
 
     @app.exception_handler(RuntimeError)
     async def runtime_error_handler(_request: Request, exc: RuntimeError) -> JSONResponse:
