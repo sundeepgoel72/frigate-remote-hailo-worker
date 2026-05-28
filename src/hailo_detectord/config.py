@@ -33,6 +33,9 @@ class Settings(BaseSettings):
     api_keys: tuple[str, ...] = ()
     public_api_enabled: bool = False
 
+    rapidapi_enabled: bool = False
+    rapidapi_proxy_secret: str | None = None
+
     max_concurrent_inferences: int = Field(default=1, ge=1)
 
     mqtt_enabled: bool = False
