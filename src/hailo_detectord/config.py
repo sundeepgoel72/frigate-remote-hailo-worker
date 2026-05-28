@@ -19,6 +19,9 @@ class Settings(BaseSettings):
     confidence_threshold: float = Field(default=0.35, ge=0.0, le=1.0)
     labels: tuple[str, ...] = ("person", "car", "dog", "cat")
 
+    debug_capture_enabled: bool = False
+    debug_capture_dir: str = "/tmp/hailo-detectord-captures"
+
     def metadata(self) -> dict:
         if not self.model_metadata_path:
             return {}
