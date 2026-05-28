@@ -19,6 +19,29 @@ class Settings(BaseSettings):
     confidence_threshold: float = Field(default=0.35, ge=0.0, le=1.0)
     labels: tuple[str, ...] = ("person", "car", "dog", "cat")
 
+    face_model_path: str | None = None
+    face_model_metadata_path: str | None = None
+    face_library_path: str | None = None
+    face_match_threshold: float = Field(default=0.65, ge=0.0, le=1.0)
+
+    model_download_enabled: bool = False
+    model_download_url: str | None = None
+    model_download_path: str | None = None
+    model_download_token: str | None = None
+    model_download_force: bool = False
+
+    api_keys: tuple[str, ...] = ()
+    public_api_enabled: bool = False
+
+    max_concurrent_inferences: int = Field(default=1, ge=1)
+
+    mqtt_enabled: bool = False
+    mqtt_host: str | None = None
+    mqtt_port: int = Field(default=1883, ge=1, le=65535)
+    mqtt_username: str | None = None
+    mqtt_password: str | None = None
+    mqtt_topic_prefix: str = "hailo-detectord"
+
     debug_capture_enabled: bool = False
     debug_capture_dir: str = "/tmp/hailo-detectord-captures"
     debug_capture_sample_rate: float = Field(default=1.0, ge=0.0, le=1.0)
