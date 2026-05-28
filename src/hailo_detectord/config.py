@@ -21,6 +21,11 @@ class Settings(BaseSettings):
 
     debug_capture_enabled: bool = False
     debug_capture_dir: str = "/tmp/hailo-detectord-captures"
+    debug_capture_sample_rate: float = Field(default=1.0, ge=0.0, le=1.0)
+    debug_capture_failed_only: bool = False
+    debug_capture_labels: tuple[str, ...] = ()
+    debug_capture_max_age_days: int = Field(default=0, ge=0)
+    debug_capture_max_bytes: int = Field(default=0, ge=0)
 
     def metadata(self) -> dict:
         if not self.model_metadata_path:
