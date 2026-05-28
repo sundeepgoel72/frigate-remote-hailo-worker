@@ -32,8 +32,22 @@ def test_deepstack_detection_endpoint_returns_predictions() -> None:
     assert response.status_code == 200
     body = response.json()
     assert body["success"] is True
-    assert body["backend"] == "mock"
+    assert body["backend"] == "mock:object"
     assert body["predictions"][0]["label"] == "person"
+
+
+def test_face_detection_endpoint_returns_predictions() -> None:
+    client = TestClient(create_app())
+
+    response = client.post(
+        "/v1/face/detection",
+        files={"image": ("face.jpg", _jpeg(), "image/jpeg")},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["success"] is True
+    assert body["backend"] == "mock:face"
 
 
 def test_raw_detection_endpoint_rejects_invalid_image() -> None:
