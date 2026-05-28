@@ -1,6 +1,7 @@
-from datetime import datetime
+from datetime import datetime, timedelta
 import json
 from pathlib import Path
+import random
 from time import perf_counter
 from uuid import uuid4
 
@@ -17,7 +18,7 @@ def create_app() -> FastAPI:
     settings = get_settings()
     backend = create_backend(settings)
 
-    app = FastAPI(title="hailo-detectord", version="0.3.0")
+    app = FastAPI(title="hailo-detectord", version="0.4.0")
 
     @app.get("/health", response_model=HealthResponse)
     def health() -> HealthResponse:
@@ -28,8 +29,58 @@ def create_app() -> FastAPI:
             model_metadata_path=settings.model_metadata_path,
         )
 
-    def save_debug_capture(data: bytes, response: DetectResponse, detector_type: str) -> None:
+    def cleanup_debug_captures(base_dir: Path) -> None:
+        if not base_dir.exists():
+            return
+
+        files = sorted(
+            [path for path in base_dir.rglob("*") if path.is_file()],
+            key=lambda path: path.stat().st_mtime,
+        )
+
+        if settings.debug_capture_max_age_days > 0:
+            cutoff = datetime.utcnow() - timedelta(days=settings.debug_capture_max_age_days)
+            for file_path in files:
+                modified = datetime.utcfromtimestamp(file_path.stat().st_mtime)
+                if modified < cutoff:
+                    file_path.unlink(missing_ok=True)
+
+        if settings.debug_capture_max_bytes > 0:
+            files = sorted(
+                [path for path in base_dir.rglob("*") if path.is_file()],
+                key=lambda path: path.stat().st_mtime,
+            )
+
+            total_size = sum(path.stat().st_size for path in files)
+
+            while total_size > settings.debug_capture_max_bytes and files:
+                oldest = files.pop(0)
+                size = oldest.stat().st_size
+                oldest.unlink(missing_ok=True)
+                total_size -= size
+
+    def should_capture(response: DetectResponse) -> bool:
         if not settings.debug_capture_enabled:
+            return False
+
+        if settings.debug_capture_sample_rate < 1.0:
+            if random.random() > settings.debug_capture_sample_rate:
+                return False
+
+        if settings.debug_capture_failed_only and response.predictions:
+            return False
+
+        if settings.debug_capture_labels:
+            prediction_labels = {prediction.label for prediction in response.predictions}
+            configured_labels = set(settings.debug_capture_labels)
+
+            if not prediction_labels.intersection(configured_labels):
+                return False
+
+        return True
+
+    def save_debug_capture(data: bytes, response: DetectResponse, detector_type: str) -> None:
+        if not should_capture(response):
             return
 
         timestamp = datetime.utcnow().strftime("%Y%m%d-%H%M%S-%f")
@@ -38,15 +89,20 @@ def create_app() -> FastAPI:
         capture_dir = Path(settings.debug_capture_dir) / detector_type
         capture_dir.mkdir(parents=True, exist_ok=True)
 
+        cleanup_debug_captures(Path(settings.debug_capture_dir))
+
         image_path = capture_dir / f"{timestamp}-{capture_id}.jpg"
         metadata_path = capture_dir / f"{timestamp}-{capture_id}.json"
 
         image_path.write_bytes(data)
 
         metadata = {
+            "timestamp": timestamp,
+            "capture_id": capture_id,
             "detector_type": detector_type,
             "backend": response.backend,
             "inference_ms": response.inference_ms,
+            "prediction_count": len(response.predictions),
             "predictions": [prediction.model_dump() for prediction in response.predictions],
         }
 
