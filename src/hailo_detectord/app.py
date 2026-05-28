@@ -5,20 +5,26 @@ import random
 from time import perf_counter
 from uuid import uuid4
 
-from fastapi import FastAPI, File, HTTPException, Request, UploadFile
+from fastapi import Depends, FastAPI, File, HTTPException, Request, UploadFile
 from fastapi.responses import JSONResponse
 
 from hailo_detectord.backends import create_backend
 from hailo_detectord.config import get_settings
 from hailo_detectord.image import decode_image
+from hailo_detectord.model_manager import ensure_model
 from hailo_detectord.models import DetectResponse, HealthResponse
+from hailo_detectord.service import InferenceQueue, metrics, require_api_key
 
 
 def create_app() -> FastAPI:
     settings = get_settings()
-    backend = create_backend(settings)
 
-    app = FastAPI(title="hailo-detectord", version="0.4.0")
+    ensure_model(settings)
+
+    backend = create_backend(settings)
+    inference_queue = InferenceQueue(settings.max_concurrent_inferences)
+
+    app = FastAPI(title="hailo-detectord", version="0.5.0")
 
     @app.get("/health", response_model=HealthResponse)
     def health() -> HealthResponse:
@@ -28,6 +34,41 @@ def create_app() -> FastAPI:
             model_path=settings.model_path,
             model_metadata_path=settings.model_metadata_path,
         )
+
+    @app.get("/metrics")
+    async def get_metrics(dep=Depends(require_api_key(settings))):
+        return {
+            "requests_total": metrics.requests_total,
+            "detector_requests": dict(metrics.detector_requests),
+            "errors_total": metrics.errors_total,
+        }
+
+    @app.post("/public/v1/object/detection", response_model=DetectResponse)
+    async def public_object_detect(
+        image: UploadFile = File(...),
+        dep=Depends(require_api_key(settings)),
+    ) -> DetectResponse:
+        return await run_detection(await image.read(), detector_type="object")
+
+    @app.post("/public/v1/face/detection", response_model=DetectResponse)
+    async def public_face_detect(
+        image: UploadFile = File(...),
+        dep=Depends(require_api_key(settings)),
+    ) -> DetectResponse:
+        return await run_detection(await image.read(), detector_type="face")
+
+    @app.post("/public/v1/face/embed")
+    async def face_embed(
+        image: UploadFile = File(...),
+        dep=Depends(require_api_key(settings)),
+    ):
+        await image.read()
+
+        return {
+            "success": True,
+            "embedding_model": "placeholder",
+            "embedding": [0.0] * 128,
+        }
 
     def cleanup_debug_captures(base_dir: Path) -> None:
         if not base_dir.exists():
@@ -112,26 +153,31 @@ def create_app() -> FastAPI:
         try:
             image = decode_image(data)
         except ValueError as exc:
+            metrics.errors_total += 1
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
-        started = perf_counter()
+        async def infer():
+            started = perf_counter()
 
-        if detector_type == "face":
-            predictions = backend.detect_faces(image)
-        else:
-            predictions = backend.detect(image)
+            if detector_type == "face":
+                predictions = backend.detect_faces(image)
+            else:
+                predictions = backend.detect(image)
 
-        elapsed_ms = (perf_counter() - started) * 1000
+            elapsed_ms = (perf_counter() - started) * 1000
 
-        response = DetectResponse(
-            predictions=predictions,
-            inference_ms=elapsed_ms,
-            backend=f"{backend.name}:{detector_type}",
-        )
+            response = DetectResponse(
+                predictions=predictions,
+                inference_ms=elapsed_ms,
+                backend=f"{backend.name}:{detector_type}",
+            )
 
-        save_debug_capture(data, response, detector_type)
+            metrics.record(detector_type)
+            save_debug_capture(data, response, detector_type)
 
-        return response
+            return response
+
+        return await inference_queue.run(infer)
 
     @app.post("/detect", response_model=DetectResponse)
     async def detect_raw(request: Request) -> DetectResponse:
@@ -151,6 +197,7 @@ def create_app() -> FastAPI:
 
     @app.exception_handler(RuntimeError)
     async def runtime_error_handler(_request: Request, exc: RuntimeError) -> JSONResponse:
+        metrics.errors_total += 1
         return JSONResponse(status_code=503, content={"success": False, "error": str(exc)})
 
     return app
