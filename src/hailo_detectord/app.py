@@ -5,11 +5,12 @@ import random
 from time import perf_counter
 from uuid import uuid4
 
-from fastapi import Depends, FastAPI, File, HTTPException, Request, UploadFile
+from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import JSONResponse
 
 from hailo_detectord.backends import create_backend
 from hailo_detectord.config import get_settings
+from hailo_detectord.face_recognition import FaceLibrary, compute_embedding
 from hailo_detectord.image import decode_image
 from hailo_detectord.model_manager import ensure_model
 from hailo_detectord.models import DetectResponse, HealthResponse
@@ -23,8 +24,9 @@ def create_app() -> FastAPI:
 
     backend = create_backend(settings)
     inference_queue = InferenceQueue(settings.max_concurrent_inferences)
+    face_library = FaceLibrary(settings)
 
-    app = FastAPI(title="hailo-detectord", version="0.5.0")
+    app = FastAPI(title="hailo-detectord", version="0.6.0")
 
     @app.get("/health", response_model=HealthResponse)
     def health() -> HealthResponse:
@@ -42,6 +44,79 @@ def create_app() -> FastAPI:
             "detector_requests": dict(metrics.detector_requests),
             "errors_total": metrics.errors_total,
         }
+
+    def _embedding_from_image_bytes(data: bytes) -> list[float]:
+        try:
+            decoded = decode_image(data)
+        except ValueError as exc:
+            metrics.errors_total += 1
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return compute_embedding(decoded)
+
+    async def enroll_face_image(data: bytes, name: str):
+        embedding = _embedding_from_image_bytes(data)
+        result = face_library.enroll(name=name, embedding=embedding)
+        result["embedding_model"] = "test-deterministic-v1"
+        result["embedding_dimensions"] = len(embedding)
+        return result
+
+    async def recognize_face_image(data: bytes):
+        embedding = _embedding_from_image_bytes(data)
+        result = face_library.recognize(embedding)
+        result["embedding_model"] = "test-deterministic-v1"
+        result["embedding_dimensions"] = len(embedding)
+        return result
+
+    # LAN/internal endpoints intended for Frigate/Double Take style integrations.
+    @app.get("/v1/face/library")
+    async def list_face_library_internal():
+        return face_library.list_people()
+
+    @app.post("/v1/face/enroll")
+    async def enroll_face_internal(
+        name: str = Form(...),
+        image: UploadFile = File(...),
+    ):
+        return await enroll_face_image(await image.read(), name)
+
+    @app.post("/v1/face/recognize")
+    async def recognize_face_internal(image: UploadFile = File(...)):
+        return await recognize_face_image(await image.read())
+
+    # DeepStack-ish compatibility route for face recognition adapters.
+    @app.post("/v1/vision/face/recognize")
+    async def recognize_face_deepstack(image: UploadFile = File(...)):
+        result = await recognize_face_image(await image.read())
+        return {
+            "success": result["success"],
+            "predictions": [
+                {
+                    "userid": result["name"],
+                    "confidence": result["score"],
+                    "matched": result["matched"],
+                }
+            ],
+        }
+
+    # Protected/public endpoints intended for external exposure.
+    @app.get("/public/v1/face/library")
+    async def list_face_library_public(dep=Depends(require_api_key(settings))):
+        return face_library.list_people()
+
+    @app.post("/public/v1/face/enroll")
+    async def enroll_face_public(
+        name: str = Form(...),
+        image: UploadFile = File(...),
+        dep=Depends(require_api_key(settings)),
+    ):
+        return await enroll_face_image(await image.read(), name)
+
+    @app.post("/public/v1/face/recognize")
+    async def recognize_face_public(
+        image: UploadFile = File(...),
+        dep=Depends(require_api_key(settings)),
+    ):
+        return await recognize_face_image(await image.read())
 
     @app.post("/public/v1/object/detection", response_model=DetectResponse)
     async def public_object_detect(
@@ -62,12 +137,12 @@ def create_app() -> FastAPI:
         image: UploadFile = File(...),
         dep=Depends(require_api_key(settings)),
     ):
-        await image.read()
-
+        embedding = _embedding_from_image_bytes(await image.read())
         return {
             "success": True,
-            "embedding_model": "placeholder",
-            "embedding": [0.0] * 128,
+            "embedding_model": "test-deterministic-v1",
+            "embedding_dimensions": len(embedding),
+            "embedding": embedding,
         }
 
     def cleanup_debug_captures(base_dir: Path) -> None:
