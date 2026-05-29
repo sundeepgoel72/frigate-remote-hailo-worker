@@ -19,14 +19,24 @@ def reset_settings_and_metrics(monkeypatch: pytest.MonkeyPatch):
     get_settings.cache_clear()
     metrics.requests_total = 0
     metrics.detector_requests.clear()
+    metrics.endpoint_requests.clear()
+    metrics.endpoint_errors.clear()
     metrics.errors_total = 0
+    metrics.active_inferences = 0
+    metrics.inference_latency_ms.clear()
+    metrics.queue_wait_ms.clear()
 
     yield
 
     get_settings.cache_clear()
     metrics.requests_total = 0
     metrics.detector_requests.clear()
+    metrics.endpoint_requests.clear()
+    metrics.endpoint_errors.clear()
     metrics.errors_total = 0
+    metrics.active_inferences = 0
+    metrics.inference_latency_ms.clear()
+    metrics.queue_wait_ms.clear()
 
 
 def _jpeg(width: int = 320, height: int = 240) -> bytes:
@@ -43,6 +53,20 @@ def test_health_uses_mock_backend_by_default() -> None:
 
     assert response.status_code == 200
     assert response.json()["backend"] == "mock"
+
+
+def test_version_endpoint_reports_model_and_face_warning() -> None:
+    client = TestClient(create_app())
+
+    response = client.get("/version")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["app"] == "hailo-detectord"
+    assert body["backend"] == "mock"
+    assert body["label_count"] == 4
+    assert body["face_backend"] == "dev-deterministic"
+    assert "dev-only" in body["face_recognition_warning"]
 
 
 def test_deepstack_detection_endpoint_returns_predictions() -> None:
@@ -160,7 +184,30 @@ def test_metrics_count_object_and_face_requests(monkeypatch: pytest.MonkeyPatch)
     body = response.json()
     assert body["requests_total"] == 2
     assert body["detector_requests"] == {"object": 1, "face": 1}
+    assert body["endpoint_requests"] == {
+        "/v1/object/detection": 1,
+        "/v1/face/detection": 1,
+    }
+    assert body["inference_latency_ms"]["count"] == 2
+    assert body["queue_wait_ms"]["count"] == 2
     assert body["errors_total"] == 0
+    assert body["model"]["backend"] == "mock"
+
+
+def test_prometheus_metrics_endpoint(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("HAILO_PUBLIC_API_ENABLED", "true")
+    monkeypatch.setenv("HAILO_API_KEYS", '["prom-secret"]')
+    get_settings.cache_clear()
+    client = TestClient(create_app())
+
+    client.post("/v1/object/detection", files={"image": ("frame.jpg", _jpeg(), "image/jpeg")})
+
+    response = client.get("/metrics/prometheus", headers={"X-API-Key": "prom-secret"})
+
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("text/plain")
+    assert "hailo_requests_total 1" in response.text
+    assert 'hailo_detector_requests_total{detector="object"} 1' in response.text
 
 
 def test_face_enroll_recognize_and_deepstack_compatibility(

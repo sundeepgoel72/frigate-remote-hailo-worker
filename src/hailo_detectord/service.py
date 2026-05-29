@@ -22,8 +22,6 @@ class Metrics:
     def record_request(self, endpoint: str, detector_type: str | None = None) -> None:
         self.requests_total += 1
         self.endpoint_requests[endpoint] += 1
-        if detector_type:
-            self.detector_requests[detector_type] += 1
 
     def record_error(self, endpoint: str) -> None:
         self.errors_total += 1
