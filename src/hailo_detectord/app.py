@@ -6,7 +6,7 @@ from time import perf_counter
 from uuid import uuid4
 
 from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, UploadFile
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, PlainTextResponse
 
 from hailo_detectord.backends import create_backend
 from hailo_detectord.config import get_settings
@@ -15,6 +15,7 @@ from hailo_detectord.image import decode_image
 from hailo_detectord.model_manager import ensure_model
 from hailo_detectord.models import DetectResponse, HealthResponse
 from hailo_detectord.service import InferenceQueue, metrics, require_api_key
+from hailo_detectord.version import version_info
 
 
 def create_app() -> FastAPI:
@@ -26,7 +27,7 @@ def create_app() -> FastAPI:
     inference_queue = InferenceQueue(settings.max_concurrent_inferences)
     face_library = FaceLibrary(settings)
 
-    app = FastAPI(title="hailo-detectord", version="0.6.0")
+    app = FastAPI(title="hailo-detectord", version="0.7.0")
 
     @app.get("/health", response_model=HealthResponse)
     def health() -> HealthResponse:
@@ -37,39 +38,50 @@ def create_app() -> FastAPI:
             model_metadata_path=settings.model_metadata_path,
         )
 
+    @app.get("/version")
+    def version():
+        return version_info(settings, backend)
+
     @app.get("/metrics")
     async def get_metrics(dep=Depends(require_api_key(settings))):
-        return {
-            "requests_total": metrics.requests_total,
-            "detector_requests": dict(metrics.detector_requests),
-            "errors_total": metrics.errors_total,
-        }
+        snapshot = metrics.snapshot()
+        snapshot["model"] = version_info(settings, backend)
+        return snapshot
 
-    def _embedding_from_image_bytes(data: bytes) -> list[float]:
+    @app.get("/metrics/prometheus")
+    async def get_prometheus_metrics(dep=Depends(require_api_key(settings))):
+        return PlainTextResponse(metrics.prometheus(), media_type="text/plain; version=0.0.4")
+
+    def _embedding_from_image_bytes(data: bytes, endpoint: str) -> list[float]:
         try:
             decoded = decode_image(data)
         except ValueError as exc:
-            metrics.errors_total += 1
+            metrics.record_error(endpoint)
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         return compute_embedding(decoded)
 
-    async def enroll_face_image(data: bytes, name: str):
-        embedding = _embedding_from_image_bytes(data)
+    async def enroll_face_image(data: bytes, name: str, endpoint: str):
+        metrics.record_request(endpoint, "face_enroll")
+        embedding = _embedding_from_image_bytes(data, endpoint)
         result = face_library.enroll(name=name, embedding=embedding)
         result["embedding_model"] = "test-deterministic-v1"
         result["embedding_dimensions"] = len(embedding)
+        result["warning"] = "Development-only deterministic embedding; not production face recognition."
         return result
 
-    async def recognize_face_image(data: bytes):
-        embedding = _embedding_from_image_bytes(data)
+    async def recognize_face_image(data: bytes, endpoint: str):
+        metrics.record_request(endpoint, "face_recognize")
+        embedding = _embedding_from_image_bytes(data, endpoint)
         result = face_library.recognize(embedding)
         result["embedding_model"] = "test-deterministic-v1"
         result["embedding_dimensions"] = len(embedding)
+        result["warning"] = "Development-only deterministic embedding; not production face recognition."
         return result
 
     # LAN/internal endpoints intended for Frigate/Double Take style integrations.
     @app.get("/v1/face/library")
     async def list_face_library_internal():
+        metrics.record_request("/v1/face/library")
         return face_library.list_people()
 
     @app.post("/v1/face/enroll")
@@ -77,16 +89,16 @@ def create_app() -> FastAPI:
         name: str = Form(...),
         image: UploadFile = File(...),
     ):
-        return await enroll_face_image(await image.read(), name)
+        return await enroll_face_image(await image.read(), name, "/v1/face/enroll")
 
     @app.post("/v1/face/recognize")
     async def recognize_face_internal(image: UploadFile = File(...)):
-        return await recognize_face_image(await image.read())
+        return await recognize_face_image(await image.read(), "/v1/face/recognize")
 
     # DeepStack-ish compatibility route for face recognition adapters.
     @app.post("/v1/vision/face/recognize")
     async def recognize_face_deepstack(image: UploadFile = File(...)):
-        result = await recognize_face_image(await image.read())
+        result = await recognize_face_image(await image.read(), "/v1/vision/face/recognize")
         return {
             "success": result["success"],
             "predictions": [
@@ -101,6 +113,7 @@ def create_app() -> FastAPI:
     # Protected/public endpoints intended for external exposure.
     @app.get("/public/v1/face/library")
     async def list_face_library_public(dep=Depends(require_api_key(settings))):
+        metrics.record_request("/public/v1/face/library")
         return face_library.list_people()
 
     @app.post("/public/v1/face/enroll")
@@ -109,40 +122,47 @@ def create_app() -> FastAPI:
         image: UploadFile = File(...),
         dep=Depends(require_api_key(settings)),
     ):
-        return await enroll_face_image(await image.read(), name)
+        return await enroll_face_image(await image.read(), name, "/public/v1/face/enroll")
 
     @app.post("/public/v1/face/recognize")
     async def recognize_face_public(
         image: UploadFile = File(...),
         dep=Depends(require_api_key(settings)),
     ):
-        return await recognize_face_image(await image.read())
+        return await recognize_face_image(await image.read(), "/public/v1/face/recognize")
 
     @app.post("/public/v1/object/detection", response_model=DetectResponse)
     async def public_object_detect(
         image: UploadFile = File(...),
         dep=Depends(require_api_key(settings)),
     ) -> DetectResponse:
-        return await run_detection(await image.read(), detector_type="object")
+        return await run_detection(
+            await image.read(), detector_type="object", endpoint="/public/v1/object/detection"
+        )
 
     @app.post("/public/v1/face/detection", response_model=DetectResponse)
     async def public_face_detect(
         image: UploadFile = File(...),
         dep=Depends(require_api_key(settings)),
     ) -> DetectResponse:
-        return await run_detection(await image.read(), detector_type="face")
+        return await run_detection(
+            await image.read(), detector_type="face", endpoint="/public/v1/face/detection"
+        )
 
     @app.post("/public/v1/face/embed")
     async def face_embed(
         image: UploadFile = File(...),
         dep=Depends(require_api_key(settings)),
     ):
-        embedding = _embedding_from_image_bytes(await image.read())
+        endpoint = "/public/v1/face/embed"
+        metrics.record_request(endpoint, "face_embed")
+        embedding = _embedding_from_image_bytes(await image.read(), endpoint)
         return {
             "success": True,
             "embedding_model": "test-deterministic-v1",
             "embedding_dimensions": len(embedding),
             "embedding": embedding,
+            "warning": "Development-only deterministic embedding; not production face recognition.",
         }
 
     def cleanup_debug_captures(base_dir: Path) -> None:
@@ -224,20 +244,25 @@ def create_app() -> FastAPI:
 
         metadata_path.write_text(json.dumps(metadata, indent=2), encoding="utf-8")
 
-    async def run_detection(data: bytes, *, detector_type: str = "object") -> DetectResponse:
+    async def run_detection(data: bytes, *, detector_type: str = "object", endpoint: str) -> DetectResponse:
+        metrics.record_request(endpoint, detector_type)
         try:
             image = decode_image(data)
         except ValueError as exc:
-            metrics.errors_total += 1
+            metrics.record_error(endpoint)
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
-        async def infer():
+        async def infer(queue_wait_ms: float):
             started = perf_counter()
 
-            if detector_type == "face":
-                predictions = backend.detect_faces(image)
-            else:
-                predictions = backend.detect(image)
+            try:
+                if detector_type == "face":
+                    predictions = backend.detect_faces(image)
+                else:
+                    predictions = backend.detect(image)
+            except Exception:
+                metrics.record_error(endpoint)
+                raise
 
             elapsed_ms = (perf_counter() - started) * 1000
 
@@ -247,7 +272,7 @@ def create_app() -> FastAPI:
                 backend=f"{backend.name}:{detector_type}",
             )
 
-            metrics.record(detector_type)
+            metrics.record_inference(detector_type, elapsed_ms, queue_wait_ms)
             save_debug_capture(data, response, detector_type)
 
             return response
@@ -256,23 +281,31 @@ def create_app() -> FastAPI:
 
     @app.post("/detect", response_model=DetectResponse)
     async def detect_raw(request: Request) -> DetectResponse:
-        return await run_detection(await request.body(), detector_type="object")
+        return await run_detection(
+            await request.body(), detector_type="object", endpoint="/detect"
+        )
 
     @app.post("/v1/vision/detection", response_model=DetectResponse)
     async def detect_deepstack(image: UploadFile = File(...)) -> DetectResponse:
-        return await run_detection(await image.read(), detector_type="object")
+        return await run_detection(
+            await image.read(), detector_type="object", endpoint="/v1/vision/detection"
+        )
 
     @app.post("/v1/object/detection", response_model=DetectResponse)
     async def detect_objects(image: UploadFile = File(...)) -> DetectResponse:
-        return await run_detection(await image.read(), detector_type="object")
+        return await run_detection(
+            await image.read(), detector_type="object", endpoint="/v1/object/detection"
+        )
 
     @app.post("/v1/face/detection", response_model=DetectResponse)
     async def detect_faces(image: UploadFile = File(...)) -> DetectResponse:
-        return await run_detection(await image.read(), detector_type="face")
+        return await run_detection(
+            await image.read(), detector_type="face", endpoint="/v1/face/detection"
+        )
 
     @app.exception_handler(RuntimeError)
-    async def runtime_error_handler(_request: Request, exc: RuntimeError) -> JSONResponse:
-        metrics.errors_total += 1
+    async def runtime_error_handler(request: Request, exc: RuntimeError) -> JSONResponse:
+        metrics.record_error(str(request.url.path))
         return JSONResponse(status_code=503, content={"success": False, "error": str(exc)})
 
     return app
