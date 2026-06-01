@@ -19,15 +19,15 @@ if [ ! -f /etc/hailo-detectord.env ]; then
   sudo cp deploy/hailo-detectord.env.example /etc/hailo-detectord.env
 fi
 
-python3 -m venv --system-site-packages "$VENV_DIR"
+sudo python3 -m venv --system-site-packages "$VENV_DIR"
 sudo "$VENV_DIR/bin/pip" install --upgrade pip
 sudo "$VENV_DIR/bin/pip" install "$APP_DIR"
 
 sudo chown -R hailo-detectord:hailo-detectord /opt/hailo-detectord
 sudo systemctl daemon-reload
 sudo systemctl enable hailo-detectord
-sudo systemctl enable hailo-greenhouse-load.timer
-sudo systemctl enable hailo-greenhouse-unload.timer
+sudo systemctl enable --now hailo-greenhouse-load.timer
+sudo systemctl enable --now hailo-greenhouse-unload.timer
 
 cat <<'EOF'
 Installed hailo-detectord.

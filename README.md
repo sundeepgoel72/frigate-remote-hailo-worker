@@ -26,6 +26,7 @@ This keeps the first prototype narrow:
 - `examples/rpi5-docker-compose.yml` - Pi-side worker deployment sample.
 - `docs/api.md` - HTTP API contract.
 - `docs/hailo-backend.md` - Notes for wiring real pyHailoRT/HailoRT inference.
+- `docs/greenhouse-batch-scheduling.md` - Greenhouse HEF lifecycle and nightly batch usage.
 
 ## Quick Start On A Dev Machine
 
