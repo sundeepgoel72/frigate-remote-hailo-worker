@@ -41,6 +41,35 @@ Then check:
 curl http://localhost:32168/health
 ```
 
+For a repeatable service smoke check:
+
+```bash
+python tools/smoke_hailo_detectord.py --base-url http://127.0.0.1:32168
+python tools/smoke_hailo_detectord.py --image /path/to/crop.jpg
+```
+
+To run optional live Hailo integration tests on the Pi:
+
+```bash
+HAILO_INTEGRATION=1 pytest tests/test_hailo_integration.py -q
+HAILO_INTEGRATION=1 HAILO_INTEGRATION_IMAGE=/path/to/crop.jpg pytest tests/test_hailo_integration.py -q
+```
+
+To prepare a HailoRT benchmark command for one or more HEF models:
+
+```bash
+python tools/hailo_multi_model_benchmark.py /opt/hailo-detectord/models/frigate-plus-hailo8.hef
+```
+
+To run a nightly greenhouse batch window without keeping the model resident all day:
+
+```bash
+python tools/greenhouse_batch_window.py --base-url http://127.0.0.1:32168
+```
+
+On the Pi, the systemd timers are configured to load the greenhouse HEF at 2:00 AM
+and unload it at 2:10 AM local time.
+
 ## RPi5 Runtime Shape
 
 Use the same Frigate-trained Hailo `.hef` model that worked in the local RPi5 Frigate test. Mount or copy that model onto the Pi and point `HAILO_MODEL_PATH` at it. If the model uses a custom Frigate label map, point `HAILO_LABELMAP_PATH` at the matching file too.
