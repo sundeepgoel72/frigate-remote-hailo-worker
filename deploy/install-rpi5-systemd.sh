@@ -8,7 +8,12 @@ MODEL_DIR=/opt/hailo-detectord/models
 sudo useradd --system --create-home --home-dir /opt/hailo-detectord hailo-detectord 2>/dev/null || true
 sudo mkdir -p "$APP_DIR" "$MODEL_DIR"
 sudo cp -R pyproject.toml README.md src "$APP_DIR"/
+sudo cp -R tools "$APP_DIR"/
 sudo cp deploy/hailo-detectord.service /etc/systemd/system/hailo-detectord.service
+sudo cp deploy/hailo-greenhouse-load.service /etc/systemd/system/hailo-greenhouse-load.service
+sudo cp deploy/hailo-greenhouse-unload.service /etc/systemd/system/hailo-greenhouse-unload.service
+sudo cp deploy/hailo-greenhouse-load.timer /etc/systemd/system/hailo-greenhouse-load.timer
+sudo cp deploy/hailo-greenhouse-unload.timer /etc/systemd/system/hailo-greenhouse-unload.timer
 
 if [ ! -f /etc/hailo-detectord.env ]; then
   sudo cp deploy/hailo-detectord.env.example /etc/hailo-detectord.env
@@ -21,6 +26,8 @@ sudo "$VENV_DIR/bin/pip" install "$APP_DIR"
 sudo chown -R hailo-detectord:hailo-detectord /opt/hailo-detectord
 sudo systemctl daemon-reload
 sudo systemctl enable hailo-detectord
+sudo systemctl enable hailo-greenhouse-load.timer
+sudo systemctl enable hailo-greenhouse-unload.timer
 
 cat <<'EOF'
 Installed hailo-detectord.
@@ -31,4 +38,5 @@ Before starting:
   3. Edit /etc/hailo-detectord.env
   4. Run: sudo systemctl start hailo-detectord
   5. Check: curl http://127.0.0.1:32168/health
+  6. Greenhouse timers will load at 02:00 and unload at 02:10
 EOF

@@ -53,6 +53,19 @@ class Settings(BaseSettings):
     debug_capture_max_age_days: int = Field(default=0, ge=0)
     debug_capture_max_bytes: int = Field(default=0, ge=0)
 
+    greenhouse_labels: tuple[str, ...] = (
+        "healthy",
+        "chlorosis_yellowing",
+        "necrosis_browning",
+        "leaf_spot_possible",
+    )
+    greenhouse_backend: Literal["color", "hailo"] = "color"
+    greenhouse_model_path: str | None = None
+    greenhouse_labelmap_path: str | None = None
+    greenhouse_input_pixel_format: Literal["bgr", "rgb"] = "rgb"
+    greenhouse_top_k: int = Field(default=5, ge=1)
+    greenhouse_autoload: bool = False
+
     def metadata(self) -> dict:
         if not self.model_metadata_path:
             return {}

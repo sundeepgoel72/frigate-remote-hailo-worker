@@ -80,6 +80,9 @@ def version_info(settings: Settings, backend: Any) -> dict[str, Any]:
         "output_shapes": _output_shapes(backend),
         "label_count": len(labels),
         "hailort_available": util.find_spec("hailo_platform") is not None,
+        "greenhouse_backend": settings.greenhouse_backend,
+        "greenhouse_model_path": settings.greenhouse_model_path,
+        "greenhouse_model_loaded": getattr(backend, "greenhouse", None) is not None,
         "face_backend": "dev-deterministic" if not settings.face_model_path else "configured",
         "face_model_path": settings.face_model_path,
         "face_recognition_warning": (

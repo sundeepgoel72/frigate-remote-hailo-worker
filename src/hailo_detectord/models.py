@@ -17,6 +17,19 @@ class DetectResponse(BaseModel):
     backend: str
 
 
+class Classification(BaseModel):
+    label: str
+    confidence: float = Field(ge=0.0, le=1.0)
+
+
+class ClassifyResponse(BaseModel):
+    success: bool = True
+    predictions: list[Classification]
+    inference_ms: float
+    backend: str
+    warning: str | None = None
+
+
 class HealthResponse(BaseModel):
     status: str
     backend: str

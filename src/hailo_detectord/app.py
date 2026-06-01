@@ -11,9 +11,10 @@ from fastapi.responses import JSONResponse, PlainTextResponse
 from hailo_detectord.backends import create_backend
 from hailo_detectord.config import get_settings
 from hailo_detectord.face_recognition import FaceLibrary, compute_embedding
+from hailo_detectord.greenhouse import GreenhouseClassifier, WARNING as GREENHOUSE_WARNING
 from hailo_detectord.image import decode_image
 from hailo_detectord.model_manager import ensure_model
-from hailo_detectord.models import DetectResponse, HealthResponse
+from hailo_detectord.models import ClassifyResponse, DetectResponse, HealthResponse
 from hailo_detectord.service import InferenceQueue, metrics, require_api_key
 from hailo_detectord.version import version_info
 
@@ -26,11 +27,12 @@ def create_app() -> FastAPI:
     backend = create_backend(settings)
     inference_queue = InferenceQueue(settings.max_concurrent_inferences)
     face_library = FaceLibrary(settings)
+    greenhouse_classifier = GreenhouseClassifier(settings)
 
     app = FastAPI(title="hailo-detectord", version="0.7.0")
 
     @app.get("/health", response_model=HealthResponse)
-    def health() -> HealthResponse:
+    async def health() -> HealthResponse:
         return HealthResponse(
             status="ok",
             backend=backend.name,
@@ -39,7 +41,7 @@ def create_app() -> FastAPI:
         )
 
     @app.get("/version")
-    def version():
+    async def version():
         return version_info(settings, backend)
 
     @app.get("/metrics")
@@ -279,6 +281,36 @@ def create_app() -> FastAPI:
 
         return await inference_queue.run(infer)
 
+    async def run_greenhouse_classification(data: bytes, endpoint: str) -> ClassifyResponse:
+        metrics.record_request(endpoint, "greenhouse_disease")
+        try:
+            image = decode_image(data)
+        except ValueError as exc:
+            metrics.record_error(endpoint)
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+        started = perf_counter()
+        if settings.greenhouse_backend == "hailo":
+            if not getattr(backend, "greenhouse", None):
+                metrics.record_error(endpoint)
+                raise HTTPException(status_code=503, detail="Greenhouse Hailo model not loaded")
+            predictions = backend.classify_greenhouse(image)
+            backend_name = "hailo:greenhouse"
+            warning = None
+        else:
+            predictions = greenhouse_classifier.classify(image)
+            backend_name = greenhouse_classifier.name
+            warning = GREENHOUSE_WARNING
+        elapsed_ms = (perf_counter() - started) * 1000
+        metrics.record_inference("greenhouse_disease", elapsed_ms, 0.0)
+
+        return ClassifyResponse(
+            predictions=predictions,
+            inference_ms=elapsed_ms,
+            backend=backend_name,
+            warning=warning,
+        )
+
     @app.post("/detect", response_model=DetectResponse)
     async def detect_raw(request: Request) -> DetectResponse:
         return await run_detection(
@@ -302,6 +334,37 @@ def create_app() -> FastAPI:
         return await run_detection(
             await image.read(), detector_type="face", endpoint="/v1/face/detection"
         )
+
+    @app.post("/v1/greenhouse/disease/classify", response_model=ClassifyResponse)
+    async def classify_greenhouse_disease(image: UploadFile = File(...)) -> ClassifyResponse:
+        return await run_greenhouse_classification(
+            await image.read(), endpoint="/v1/greenhouse/disease/classify"
+        )
+
+    @app.get("/v1/greenhouse/model/status")
+    async def greenhouse_model_status():
+        if not hasattr(backend, "greenhouse_status"):
+            raise HTTPException(status_code=400, detail="Greenhouse Hailo backend unavailable")
+        metrics.record_request("/v1/greenhouse/model/status", "greenhouse_control")
+        return backend.greenhouse_status()
+
+    @app.post("/v1/greenhouse/model/load")
+    async def greenhouse_model_load():
+        if not hasattr(backend, "load_greenhouse"):
+            raise HTTPException(status_code=400, detail="Greenhouse Hailo backend unavailable")
+        metrics.record_request("/v1/greenhouse/model/load", "greenhouse_control")
+        try:
+            return backend.load_greenhouse()
+        except RuntimeError as exc:
+            metrics.record_error("/v1/greenhouse/model/load")
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+    @app.post("/v1/greenhouse/model/unload")
+    async def greenhouse_model_unload():
+        if not hasattr(backend, "unload_greenhouse"):
+            raise HTTPException(status_code=400, detail="Greenhouse Hailo backend unavailable")
+        metrics.record_request("/v1/greenhouse/model/unload", "greenhouse_control")
+        return backend.unload_greenhouse()
 
     @app.exception_handler(RuntimeError)
     async def runtime_error_handler(request: Request, exc: RuntimeError) -> JSONResponse:

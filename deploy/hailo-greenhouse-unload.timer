@@ -1,0 +1,10 @@
+[Unit]
+Description=Nightly greenhouse HEF unload timer
+
+[Timer]
+OnCalendar=*-*-* 02:10:00
+Persistent=true
+Unit=hailo-greenhouse-unload.service
+
+[Install]
+WantedBy=timers.target

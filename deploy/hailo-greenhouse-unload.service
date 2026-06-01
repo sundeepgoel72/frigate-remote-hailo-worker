@@ -1,0 +1,10 @@
+[Unit]
+Description=Unload greenhouse HEF after nightly batch window
+
+[Service]
+Type=oneshot
+User=hailo-detectord
+Group=hailo-detectord
+WorkingDirectory=/opt/hailo-detectord/app
+EnvironmentFile=/etc/hailo-detectord.env
+ExecStart=/opt/hailo-detectord/venv/bin/python /opt/hailo-detectord/app/tools/greenhouse_model_control.py --base-url http://127.0.0.1:32168 unload
